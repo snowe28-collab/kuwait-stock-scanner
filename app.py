@@ -26,12 +26,90 @@ import yfinance as yf
 import streamlit as st
 
 
-APP_NAME = "Kuwait Stock Smart Scanner v1.0"
+APP_NAME = "Kuwait Stock Smart Scanner v2.0 Mobile Arabic"
 BOURSA_RSS_EN = "https://rss.boursakuwait.com.kw/rss/FeedFull.aspx?T=4"
 BOURSA_RSS_AR = "https://rss.boursakuwait.com.kw/A/rss/FeedFull.aspx?T=4"
 USER_AGENT = "Mozilla/5.0 (KuwaitStockSmartScanner/1.0)"
 
 # قائمة احتياطية لأكبر أسهم السوق الأول في حال تعذر قراءة تقرير البورصة.
+
+# أسماء عربية احتياطية لأسهم السوق الأول.
+ARABIC_NAMES = {
+    "NBK": "بنك الكويت الوطني",
+    "GBK": "بنك الخليج",
+    "ABK": "البنك الأهلي الكويتي",
+    "KIB": "بنك الكويت الدولي",
+    "BURG": "بنك برقان",
+    "KFH": "بيت التمويل الكويتي",
+    "BOUBYAN": "بنك بوبيان",
+    "KINV": "شركة الكويت للاستثمار",
+    "IFA": "الاستشارات المالية الدولية القابضة",
+    "NINV": "شركة الاستثمارات الوطنية",
+    "KPROJ": "شركة مشاريع الكويت القابضة",
+    "ARZAN": "مجموعة أرزان المالية للتمويل والاستثمار",
+    "AAYAN": "أعيان للإجارة والاستثمار",
+    "KRE": "شركة الكويت العقارية",
+    "URC": "الشركة المتحدة العقارية",
+    "SRE": "شركة الصالحية العقارية",
+    "MABANEE": "شركة المباني",
+    "ALTIJARIA": "الشركة التجارية العقارية",
+    "NIND": "مجموعة الصناعات الوطنية القابضة",
+    "CABLE": "الخليج للكابلات والصناعات الكهربائية",
+    "SHIP": "الصناعات الهندسية الثقيلة وبناء السفن",
+    "BPCC": "بوبيان للبتروكيماويات",
+    "MKHZN": "أجيليتي للمخازن العمومية",
+    "ZAIN": "شركة الاتصالات المتنقلة - زين",
+    "HUMANSOFT": "هيومن سوفت القابضة",
+    "IFAHR": "إيفا للفنادق والمنتجعات",
+    "CGC": "المجموعة المشتركة للمقاولات",
+    "OULAFUEL": "الأولى للتسويق المحلي للوقود",
+    "JAZEERA": "طيران الجزيرة",
+    "GFH": "مجموعة جي إف إتش المالية",
+    "WARBABANK": "بنك وربة",
+    "STC": "شركة الاتصالات الكويتية - stc",
+    "MEZZAN": "ميزان القابضة",
+    "INTEGRATED": "المتكاملة القابضة",
+    "BOURSA": "بورصة الكويت للأوراق المالية",
+    "ALG": "علي الغانم وأولاده للسيارات",
+    "BEYOUT": "بيوت القابضة",
+    "ALFTAQA": "أكشن إنرجي",
+    "TROLLEY": "ترولي للتجارة العامة",
+}
+
+def has_arabic(s):
+    return bool(re.search(r"[\u0600-\u06FF]", str(s or "")))
+
+def try_load_arabic_names(report_url, expected_count):
+    """
+    يحاول قراءة النسخة العربية من تقرير بورصة الكويت.
+    إذا تطابق ترتيب الصفوف، يستخدم عمود أسماء الشركات العربية تلقائياً.
+    """
+    try:
+        ar_url = report_url.replace("/en/", "/ar/")
+        html_text = requests.get(ar_url, headers={"User-Agent": USER_AGENT}, timeout=20).text
+        tables = pd.read_html(html_text)
+        best_names = None
+        best_score = -1
+        for df in tables:
+            if len(df) < max(10, int(expected_count * 0.75)):
+                continue
+            for col in df.columns:
+                vals = df[col].astype(str).str.strip()
+                sample = vals.head(min(expected_count, len(vals)))
+                arabic_count = sum(len(re.findall(r"[\u0600-\u06FF]", v)) for v in sample)
+                unique_ratio = sample.nunique(dropna=True) / max(1, len(sample))
+                avg_len = sample.map(len).mean()
+                score = arabic_count * unique_ratio
+                # أسماء الشركات عادةً عربية، متنوعة، وأطول من اسم السوق.
+                if arabic_count > 40 and unique_ratio > 0.35 and avg_len > 5 and score > best_score:
+                    best_score = score
+                    best_names = vals.reset_index(drop=True)
+        if best_names is not None and len(best_names) >= expected_count:
+            return best_names.iloc[:expected_count].tolist()
+    except Exception:
+        pass
+    return None
+
 FALLBACK = [
     ("Premier","101","NBK","NATIONAL BANK OF KUWAIT"),
     ("Premier","102","GBK","GULF BANK"),
@@ -97,24 +175,27 @@ NEGATIVE_WORDS = {
 st.set_page_config(page_title=APP_NAME, page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""
 <style>
-html, body, [class*="css"] { direction: rtl; text-align: right; }
-[data-testid="stDataFrame"] { direction: rtl; }
+html, body { direction: rtl; text-align: right; }
+[data-testid="stAppViewContainer"] { direction: rtl; }
+[data-testid="stMarkdownContainer"] { text-align: right; }
 .small-note {font-size:0.9rem; opacity:0.8;}
 .good {font-weight:700;}
-.block-container { padding-top: 1rem; padding-left: .8rem; padding-right: .8rem; max-width: 100%; }
-h1 { font-size: 1.65rem !important; line-height: 1.25 !important; }
-h2 { font-size: 1.25rem !important; }
-h3 { font-size: 1.1rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.35rem !important; }
-button[kind="primary"] { min-height: 48px; font-size: 1rem; }
-[data-testid="stSidebar"] { direction: rtl; }
+.block-container { padding-top: .75rem; padding-left: .65rem; padding-right: .65rem; max-width: 100%; }
+h1 { font-size: 1.55rem !important; line-height: 1.3 !important; }
+h2 { font-size: 1.22rem !important; }
+h3 { font-size: 1.08rem !important; }
+[data-testid="stMetricValue"] { font-size: 1.28rem !important; }
+.stButton button { min-height: 46px; }
+[data-testid="stDataFrame"] { direction: ltr; }
+[data-testid="stDataFrame"] * { white-space: nowrap; }
+[data-testid="stVegaLiteChart"], [data-testid="stArrowVegaLiteChart"], svg { direction: ltr !important; }
 @media (max-width: 700px) {
-  .block-container { padding-top: .65rem; padding-left: .55rem; padding-right: .55rem; }
-  h1 { font-size: 1.45rem !important; }
-  [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
-  div[data-testid="stMetric"] { padding: .55rem .35rem; }
+  .block-container { padding-top: .55rem; padding-left: .45rem; padding-right: .45rem; }
+  h1 { font-size: 1.38rem !important; }
+  [data-testid="column"] { min-width: 0 !important; }
+  div[data-testid="stMetric"] { padding: .35rem .2rem; }
   .stButton button { width: 100%; min-height: 48px; }
-  [data-testid="stDataFrame"] { font-size: 0.82rem; }
+  [data-testid="stDataFrame"] { font-size: .80rem; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -192,9 +273,18 @@ def load_universe():
             table[ff_val_col].astype(str).str.replace(",","",regex=False),
             errors="coerce") if ff_val_col is not None else np.nan
         out = out.dropna(subset=["Ticker"]).drop_duplicates("Ticker").reset_index(drop=True)
+
+        # محاولة جلب الأسماء العربية من النسخة العربية من نفس التقرير.
+        ar_names = try_load_arabic_names(url, len(out))
+        if ar_names and len(ar_names) == len(out):
+            out["NameAR"] = ar_names
+        else:
+            out["NameAR"] = out["Ticker"].map(ARABIC_NAMES).fillna(out["Name"])
+
         return out, url, False
     except Exception:
         out = pd.DataFrame(FALLBACK, columns=["Market","SecCode","Ticker","Name"])
+        out["NameAR"] = out["Ticker"].map(ARABIC_NAMES).fillna(out["Name"])
         out["FreeFloatPct"] = np.nan
         out["FreeFloatValue"] = np.nan
         return out, url, True
@@ -501,11 +591,10 @@ def fmt_pct(x, multiply=False):
 
 
 st.title("📊 محلل بورصة الكويت الذكي")
-st.caption("نسخة الهاتف — افتح القائمة الجانبية لاختيار السوق ثم اضغط تحليل السوق الآن")
-st.caption("فحص السوق كاملًا + إفصاحات بورصة الكويت + أخبار + تحليل فني + سيولة + ترتيب أفضل فرص الشراء")
+st.caption("نسخة الهاتف V2 — أسماء الشركات بالعربي + عرض أنظف على Chrome")
+st.caption("فحص السوق + إفصاحات بورصة الكويت + أخبار + تحليل فني + سيولة + ترتيب أفضل فرص الشراء")
 
-with st.sidebar:
-    st.subheader("إعدادات الفحص")
+with st.expander("⚙️ إعدادات الفحص", expanded=False):
     market_filter = st.selectbox("السوق", ["الكل", "Premier", "Main"], index=0)
     top_n = st.slider("عدد أفضل الفرص", 5, 30, 10, 1)
     min_score = st.slider("أقل درجة للعرض", 0, 100, 55, 1)
@@ -514,7 +603,6 @@ with st.sidebar:
         ["لأفضل 30 مرشح", "السوق كامل", "إيقاف الأخبار العامة"],
         index=1
     )
-    st.markdown("---")
     st.caption("الأسعار من Yahoo Finance وقد تكون مؤخرة. الإفصاحات من RSS الرسمي لبورصة الكويت.")
     run = st.button("🔄 تحليل السوق الآن", type="primary", use_container_width=True)
 
@@ -555,13 +643,13 @@ if run or st.session_state.scan_result is None:
             if not ind:
                 continue
             ts, treasons = technical_score(ind)
-            off = match_official_news(tick, r["Name"], rss_items)
+            off = match_official_news(tick, f"{r.get('NameAR', '')} {r['Name']}", rss_items)
             ons = official_news_score(off)
             liq = float(r["LiquidityScore"])
             base = ts + liq + ons + 5.0  # 5 نقطة محايدة للأخبار العامة مبدئيًا
             e1,e2,sl,t1,t2,risk = trade_levels(ind)
             rows.append({
-                "Ticker": tick, "Name": r["Name"], "Market": r["Market"],
+                "Ticker": tick, "NameAR": r.get("NameAR", r["Name"]), "Name": r["Name"], "Market": r["Market"],
                 "Price": ind["price"], "Technical": ts, "Liquidity": liq,
                 "OfficialNews": ons, "WebNews": 5.0, "Fundamental": 5.0,
                 "Score": base, "Signal": label(base),
@@ -589,7 +677,7 @@ if run or st.session_state.scan_result is None:
         # fundamentals لأفضل 35 لتجنب الضغط على المصدر
         fund_targets = pre.head(35)["Ticker"].tolist()
 
-        name_map = dict(zip(result["Ticker"], result["Name"]))
+        name_map = {r["Ticker"]: f"{r.get('NameAR', '')} {r['Name']}" for _, r in result.iterrows()}
         web_results = {}
         if news_targets:
             with ThreadPoolExecutor(max_workers=8) as ex:
@@ -638,16 +726,17 @@ c3.metric("فرص 74+", int((result["Score"] >= 74).sum()))
 c4.metric("متوسط السوق", f'{result["Score"].mean():.1f}/100')
 
 if st.session_state.get("fallback_used"):
-    st.warning("تعذر تحميل القائمة الكاملة من تقرير البورصة، لذلك تم استخدام قائمة احتياطية من السوق الأول. أعد الفحص لاحقًا لتحميل السوق كاملًا.")
+    st.warning("تعذر تحميل القائمة الكاملة من تقرير البورصة، لذلك تم استخدام قائمة احتياطية من السوق الأول. الأسماء العربية ما زالت ظاهرة. أعد الفحص لاحقًا لتحميل السوق كاملًا.")
 
 st.subheader(f"🏆 أفضل {top_n} فرص حاليًا")
 top = result[result["Score"] >= min_score].head(top_n).copy()
+top["Market"] = top["Market"].replace({"Premier":"السوق الأول", "Main":"السوق الرئيسي"})
 display_cols = [
-    "Ticker","Name","Market","Price","Score","Signal","Technical","OfficialNews",
+    "Ticker","NameAR","Name","Market","Price","Score","Signal","Technical","OfficialNews",
     "Liquidity","RSI","Momentum20","EntryLow","EntryHigh","Stop","Target1","Target2","RiskPct"
 ]
 disp = top[display_cols].rename(columns={
-    "Ticker":"الرمز","Name":"الشركة","Market":"السوق","Price":"السعر",
+    "Ticker":"الرمز","NameAR":"الشركة بالعربي","Name":"الاسم الإنجليزي","Market":"السوق","Price":"السعر",
     "Score":"الدرجة","Signal":"التقييم","Technical":"فني/50",
     "OfficialNews":"إفصاحات/15","Liquidity":"سيولة/15","RSI":"RSI",
     "Momentum20":"زخم20%","EntryLow":"دخول من","EntryHigh":"دخول إلى",
@@ -663,9 +752,11 @@ st.subheader("🔎 تحليل سهم بالتفصيل")
 selected = st.selectbox(
     "اختر سهمًا",
     result["Ticker"].tolist(),
-    format_func=lambda t: f"{t} — {result.loc[result['Ticker']==t,'Name'].iloc[0]}"
+    format_func=lambda t: f"{result.loc[result['Ticker']==t,'NameAR'].iloc[0]} — {t}"
 )
 row = result[result["Ticker"] == selected].iloc[0]
+st.markdown(f"### {row['NameAR']}  ·  `{row['Ticker']}`")
+st.caption(str(row["Name"]))
 det = st.session_state.details.get(selected, {})
 ind = det.get("ind", {})
 left, mid, right = st.columns(3)
@@ -691,7 +782,7 @@ st.dataframe(levels, use_container_width=True, hide_index=True)
 
 price_df = det.get("price_df")
 if isinstance(price_df, pd.DataFrame) and not price_df.empty:
-    chart = price_df[["Close"]].tail(120).rename(columns={"Close":"السعر"})
+    chart = price_df[["Close"]].tail(120).rename(columns={"Close":"Price"})
     st.line_chart(chart)
 
 st.markdown("### الإفصاحات الرسمية المرتبطة")
